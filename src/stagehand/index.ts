@@ -4,18 +4,15 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
-  ListResourcesRequestSchema,
   ListToolsRequestSchema,
-  ReadResourceRequestSchema,
   CallToolResult,
-  TextContent,
-  ImageContent,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { Stagehand } from "@browserbasehq/stagehand";
-import { AnyZodObject, z } from "zod";
 
+import { AnyZodObject } from 'zod';
+import { jsonSchemaToZod } from './utils.js';
 
 // Define the Stagehand tools
 const TOOLS: Tool[] = [
@@ -48,14 +45,94 @@ const TOOLS: Tool[] = [
   },
   {
     name: "stagehand_extract",
-    description: "Extracts data from the web page based on an instruction and schema",
+    description: `
+  Extracts structured data from the web page based on an instruction and a JSON schema.
+  
+  **Instructions for providing the schema:**
+  
+  - The \`schema\` should be a valid JSON Schema object that defines the structure of the data to extract.
+  - Use standard JSON Schema syntax.
+  - The server will convert the JSON Schema to a Zod schema internally.
+  
+  **Example schemas:**
+  
+  1. **Extracting a list of search result titles:**
+  
+  \`\`\`json
+  {
+    "type": "object",
+    "properties": {
+      "searchResults": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "description": "Title of a search result"
+        }
+      }
+    },
+    "required": ["searchResults"]
+  }
+  \`\`\`
+  
+  2. **Extracting product details:**
+  
+  \`\`\`json
+  {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string" },
+      "price": { "type": "string" },
+      "rating": { "type": "number" },
+      "reviews": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "required": ["name", "price", "rating", "reviews"]
+  }
+  \`\`\`
+  
+  **Example usage:**
+  
+  - **Instruction**: "Extract the titles and URLs of the main search results, excluding any ads."
+  - **Schema**:
+    \`\`\`json
+    {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string", "description": "The title of the search result" },
+              "url": { "type": "string", "description": "The URL of the search result" }
+            },
+            "required": ["title", "url"]
+          }
+        }
+      },
+      "required": ["results"]
+    }
+    \`\`\`
+  
+  **Note:**
+  
+  - Ensure the schema is valid JSON.
+  - Use standard JSON Schema types like \`string\`, \`number\`, \`array\`, \`object\`, etc.
+  - You can add descriptions to help clarify the expected data.
+  
+  `,
     inputSchema: {
       type: "object",
       properties: {
-        instruction: { type: "string", description: "Instruction for extraction" },
+        instruction: { 
+          type: "string", 
+          description: "Clear instruction for what data to extract from the page" 
+        },
         schema: {
           type: "object",
-          description: "JSON schema for the extracted data",
+          description: "A JSON Schema object defining the structure of data to extract",
           additionalProperties: true,
         },
       },
@@ -213,47 +290,51 @@ async function handleToolCall(
         };
       }
 
-    case "stagehand_extract":
-      try {
-        log(`Extracting data with instruction: ${args.instruction}`);
-        // Convert the JSON schema from args.schema to a zod schema
-        const schema = z.object(args.schema);
-        const data = await stagehand.extract({
-          instruction: args.instruction,
-          schema,
-        });
-        log(`Data extracted successfully: ${JSON.stringify(data)}`);
-        return {
-          toolResult: {
-            content: [
-              {
-                type: "text",
-                text: `Extraction result: ${JSON.stringify(data)}`,
-              },
-            ],
-            isError: false,
-          },
-        };
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        log(`Extraction failed: ${errorMsg}`);
-        return {
-          toolResult: {
-            content: [
-              {
-                type: "text",
-                text: `Failed to extract: ${errorMsg}`,
-              },
-              {
-                type: "text",
-                text: `Operation logs:\n${operationLogs.join("\n")}`,
-              }
-            ],
-            isError: true,
-          },
-        };
-      }
-
+      case "stagehand_extract":
+        try {
+          log(`Extracting data with instruction: ${args.instruction}`);
+          log(`Schema: ${JSON.stringify(args.schema)}`);
+          // Convert the JSON schema from args.schema to a zod schema
+          const zodSchema = jsonSchemaToZod(args.schema) as AnyZodObject;
+          const data = await stagehand.extract({
+            instruction: args.instruction,
+            schema: zodSchema,
+          });
+          log(`Data extracted successfully: ${JSON.stringify(data)}`);
+          return {
+            toolResult: {
+              content: [
+                {
+                  type: "text",
+                  text: `Extraction result: ${JSON.stringify(data)}`,
+                },
+                {
+                  type: "text",
+                  text: `Operation logs:\n${operationLogs.join("\n")}`,
+                }
+              ],
+              isError: false,
+            },
+          };
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          log(`Extraction failed: ${errorMsg}`);
+          return {
+            toolResult: {
+              content: [
+                {
+                  type: "text",
+                  text: `Failed to extract: ${errorMsg}`,
+                },
+                {
+                  type: "text",
+                  text: `Operation logs:\n${operationLogs.join("\n")}`,
+                }
+              ],
+              isError: true,
+            },
+          };
+        }
     case "stagehand_observe":
       try {
         log(`Starting observation with instruction: ${args.instruction}`);
